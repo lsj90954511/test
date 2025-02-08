@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>WebSocket & QnA Test</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sockjs-client/1.5.1/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+
+    <h2>🔑 로그인</h2>
+    <input type="text" id="username" placeholder="아이디">
+    <input type="password" id="password" placeholder="비밀번호">
+    <button onclick="login()">로그인</button>
+    <p id="loginStatus"></p>
+
+    <h2>🔌 웹소켓 연결</h2>
+    <button onclick="connectWebSocket()">웹소켓 연결</button>
+    <p id="socketStatus"></p>
+
+    <h2>📩 받은 알림</h2>
+    <ul id="notifications"></ul>
+
+    <h2>❓ 질문 등록</h2>
+    <input type="number" id="questionLectureId" placeholder="강의 ID">
+    <input type="text" id="questionTitle" placeholder="질문 제목">
+    <input type="text" id="questionContent" placeholder="질문 내용">
+    <input type="file" id="questionImages" multiple>
+    <button onclick="registerQuestion()">질문 등록</button>
+    <p id="questionStatus"></p>
+
+    <h2>❗ 답변 등록</h2>
+    <input type="number" id="lectureId" placeholder="강의 ID">
+    <input type="number" id="questionId" placeholder="질문 ID">
+    <input type="text" id="answerContent" placeholder="답변 내용">
+    <button onclick="registerAnswer()">답변 등록</button>
+    <p id="answernStatus"></p>
+
+    <h2>📩 테스트 알림 보내기</h2>
+    <button onclick="sendTestNotification()">테스트 알림 보내기</button>
+    <p id="testNotificationStatus"></p>
+
+    <h2>https 테스트</h2>
+    <button onclick="connectTest()">connect</button>
+
+    <script>
+        let stompClient = null;
+
+        // ✅ 1️⃣ 로그인 (JWT 저장)
+        async function login() {
+            try {
+                const user = document.getElementById("username").value;
+                const pass = document.getElementById("password").value;
+
+                const response = await fetch("https://bamjun.click:9000/auth/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id: user, password: pass })
+                });
+
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`❌ 로그인 실패: ${errorText || response.statusText}`);
+                }
+
+                // ✅ JWT 토큰을 헤더에서 가져오기
+                const authHeader = response.headers.get("Authorization");
+                if (!authHeader || !authHeader.startsWith("Bearer ")) {
+                    console.error("❌ Invalid Authorization header:", authHeader);
+                    return;
+                }
+
+                // ✅ 'Bearer ' 제거 후 저장
+                const token = authHeader.substring(7);
+                sessionStorage.setItem("Authorization", token);
+                console.log("✅ 저장된 JWT:", token);
+                document.getElementById("loginStatus").innerText = "✅ 로그인 성공!";
+
+            } catch (error) {
+                console.error("❌ Login failed:", error.message);
+                document.getElementById("loginStatus").innerText = error.message;
+            }
+        }
+
+        // ✅ 2️⃣ 웹소켓 연결 (JWT 포함)
+        function connectWebSocket() {
+            const token = sessionStorage.getItem("Authorization");
+            if (!token) {
+                alert("로그인 후 다시 시도하세요!");
+                return;
+            }
+
+            console.log("📡 WebSocket 연결 시도 - JWT:", token);
+
+            const socket = new SockJS("https://bamjun.click:9000/ws");
+            //const socket = new WebSocket("ws://localhost:8080/ws");
+            stompClient = Stomp.over(socket);
+
+            stompClient.connect({ Authorization: `Bearer ${token}`, "simpUser": token }, function (frame) {
+                console.log("✅ WebSocket Connected");
+                document.getElementById("socketStatus").innerText = "✅ 웹소켓 연결 성공";
+
+                // 🔥 구독 (알림 수신)
+                stompClient.subscribe("/user/queue/notifications", function (message) {
+                    const notification = JSON.parse(message.body);
+                    console.log("📩 알림 수신: ", notification.message);
+                    displayNotification(notification.message);
+                },
+                function (error) {
+                    console.error("❌ WebSocket 연결 실패:", error);
+                }
+            );
+                
+            });
+        }
+
+        // ✅ 3️⃣ 질문 등록 (JWT 포함)
+        async function registerQuestion() {
+            const token = sessionStorage.getItem("Authorization");
+            if (!token) {
+                alert("로그인 후 다시 시도하세요!");
+                return;
+            }
+
+            const lectureId = document.getElementById("questionLectureId").value;
+            const title = document.getElementById("questionTitle").value;
+            const content = document.getElementById("questionContent").value;
+            const imageInput = document.getElementById("questionImages");
+            const images = imageInput.files;
+            const formData = new FormData();
+            const questionData = { title, content };
+            formData.append("question", new Blob([JSON.stringify(questionData)], { type: "application/json" }));
+
+            if (images.length > 0) {
+                for (let i = 0; i < images.length; i++) {
+                    formData.append("images", images[i]);
+                }
+            }
+
+            try {
+                const response = await fetch(`https://bamjun.click:9000/lectures/${lectureId}/questions`, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${token}` // ✅ JWT 토큰 추가 (Content-Type은 자동 설정)
+                    },
+                    body: formData // ✅ FormData 사용 (JSON을 Blob으로 변환했기 때문에 문제없음)
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log("✅ 질문 등록 성공:", data);
+                    alert("질문이 성공적으로 등록되었습니다.");
+                } else {
+                    console.error("❌ 질문 등록 실패:", response.status);
+                    alert("질문 등록에 실패했습니다.");
+                }
+            } catch (error) {
+                console.error("❌ 서버 오류:", error);
+                alert("서버 오류가 발생했습니다.");
+            }
+        }
+
+        // ✅ 3️⃣ 답변 등록 (JWT 포함)
+        async function registerAnswer() {
+            const token = sessionStorage.getItem("Authorization");
+            if (!token) {
+                alert("로그인 후 다시 시도하세요!");
+                return;
+            }
+
+            const lectureId = document.getElementById("lectureId").value;
+            const questionId = document.getElementById("questionId").value;
+            const content = document.getElementById("answerContent").value;
+            const answerData = { content };
+
+            try {
+                const response = await fetch(`https://bamjun.click:9000/lectures/${lectureId}/questions/${questionId}/answers`, {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${token}`,
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(answerData)
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log("✅ 답변 등록 성공:", data);
+                    alert("질문이 성공적으로 등록되었습니다.");
+                } else {
+                    console.error("❌ 답변 등록 실패:", response.status);
+                    alert("질문 등록에 실패했습니다.");
+                }
+            } catch (error) {
+                console.error("❌ 서버 오류:", error);
+                alert("서버 오류가 발생했습니다.");
+            }
+        }
+
+        // ✅ 4️⃣ 알림을 화면에 표시하는 함수
+        function displayNotification(message) {
+            const notificationList = document.getElementById("notifications");
+            const li = document.createElement("li");
+            li.innerText = message;
+            notificationList.appendChild(li);
+        }
+
+        // ✅ 3️⃣ 테스트 알림 보내기
+        function sendTestNotification() {
+            if (!stompClient || !stompClient.connected) {
+                alert("웹소켓 연결 후 다시 시도하세요!");
+                return;
+            }
+
+            stompClient.send("/app/test", {}, JSON.stringify({})); // ✅ 서버로 메시지 전송
+            document.getElementById("testNotificationStatus").innerText = "✅ 테스트 알림 요청 보냄!";
+        }
+
+        function connectTest() {
+            const socket = new WebSocket("wss://bamjun.click/ws/");
+            socket.onopen = () => console.log("WebSocket 연결 성공");
+            socket.onmessage = (event) => console.log("메시지 수신:", event.data);
+            socket.onerror = (error) => console.error("오류 발생:", error);
+            socket.onclose = () => console.log("연결 종료")
+        }
+    </script>
+
+</body>
+</html>
